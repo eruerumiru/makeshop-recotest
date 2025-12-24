@@ -156,25 +156,49 @@ function parseSpec(text = "") {
   return { memGB, ssdGB, hasGPU, cpu };
 }
 
-function scoreByUse(useCase, price, spec) {
+function scoreByUse(useCase, price, spec, budget) {
   let s = 0;
-  s += Math.max(0, 100000 - price) / 10000;
 
-  if (useCase === "office") {
-    if ((spec.memGB ?? 0) >= 8) s += 5;
-    if ((spec.ssdGB ?? 0) >= 256) s += 3;
-  } else if (useCase === "creator") {
-    if ((spec.memGB ?? 0) >= 16) s += 7;
-    if ((spec.ssdGB ?? 0) >= 512) s += 4;
-    if (spec.hasGPU) s += 2;
-  } else if (useCase === "game") {
-    if (spec.hasGPU) s += 10;
-    if ((spec.memGB ?? 0) >= 16) s += 4;
+  // ① 予算に近いほど高得点（安すぎるのも減点）
+  const ratio = budget > 0 ? price / budget : 0; // 0〜
+  if (ratio <= 1.0) {
+    // 0.85〜1.0 をピークにする（0.6以下は弱く）
+    if (ratio >= 0.85) s += 10;
+    else if (ratio >= 0.70) s += 7;
+    else if (ratio >= 0.55) s += 4;
+    else s += 1;
+  } else {
+    // 予算超過は大減点（基本ここには入らないけど保険）
+    s -= (ratio - 1.0) * 30;
   }
 
+  // ② 用途スコア（必要条件を強めに）
+  const mem = spec.memGB ?? 0;
+  const ssd = spec.ssdGB ?? 0;
+
+  if (useCase === "office") {
+    if (mem >= 16) s += 6;
+    else if (mem >= 8) s += 4;
+    if (ssd >= 512) s += 4;
+    else if (ssd >= 256) s += 2;
+  } else if (useCase === "creator") {
+    if (mem >= 32) s += 10;
+    else if (mem >= 16) s += 7;
+    if (ssd >= 1024) s += 6;
+    else if (ssd >= 512) s += 4;
+    if (spec.hasGPU) s += 3;
+  } else if (useCase === "game") {
+    if (spec.hasGPU) s += 12;
+    if (mem >= 16) s += 5;
+    if (ssd >= 512) s += 3;
+  }
+
+  // ③ CPUが拾えてたら微加点
   if (spec.cpu) s += 1;
+
   return s;
 }
+
 
 function sendJson(res, status, obj) {
   res.statusCode = status;
@@ -218,7 +242,7 @@ module.exports = async (req, res) => {
       .filter((p) => p.price <= budgetNum)
       .map((p) => {
         const spec = parseSpec(`${p.name}\n${p.description}`);
-        const score = scoreByUse(useCase, p.price, spec);
+        const score = scoreByUse(useCase, p.price, spec, budgetNum);
         return { ...p, spec, score };
       })
       .sort((a, b) => b.score - a.score)
