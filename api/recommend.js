@@ -9,7 +9,6 @@ const iconv = require("iconv-lite");
 let _cache = { at: 0, rows: null };
 
 function parseCsvLine(line) {
-  // "..." のカンマ対応（最低限）
   const out = [];
   let cur = "";
   let inQ = false;
@@ -34,11 +33,9 @@ function parseCsvLine(line) {
 }
 
 function decodeCsvSmart(buf) {
-  // まずUTF-8で試して、ヘッダに「商品名」が無ければcp932に切替
   const utf8 = buf.toString("utf8");
   if (utf8.includes("商品名") && utf8.includes("販売価格")) return utf8;
-  const cp932 = iconv.decode(buf, "cp932");
-  return cp932;
+  return iconv.decode(buf, "cp932");
 }
 
 function readProductsFromMakeshopCsv() {
@@ -74,18 +71,16 @@ function readProductsFromMakeshopCsv() {
       sku: originalCode || systemCode,
       systemCode,
       name,
-      description: `${name}\n${opt}`.trim(), // スペック抽出の材料
+      description: `${name}\n${opt}`.trim(),
       price,
       quantity,
-      url: "" // CSVにURLが無いので空（後で組み立て可）
+      url: "",
     };
   });
 
   _cache = { at: now, rows };
   return rows;
 }
-
-// --- ここから下は「おすすめロジック」（前のまま） ---
 
 function parseSpec(text = "") {
   const t = String(text).replace(/\s+/g, " ");
@@ -147,16 +142,27 @@ async function readJson(req) {
   for await (const chunk of req) chunks.push(chunk);
   const raw = Buffer.concat(chunks).toString("utf8");
   if (!raw) return {};
-  try { return JSON.parse(raw); } catch { return {}; }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
 }
 
 module.exports = async (req, res) => {
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") { res.statusCode = 204; return res.end(); }
-  if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST only" });
+  // preflight
+  if (req.method === "OPTIONS") {
+    res.statusCode = 204;
+    return res.end();
+  }
+  if (req.method !== "POST") {
+    return sendJson(res, 405, { ok: false, error: "POST only" });
+  }
 
   try {
     const body = await readJson(req);
@@ -164,8 +170,30 @@ module.exports = async (req, res) => {
     const budgetNum = Number(body.budget ?? 60000);
 
     const products = readProductsFromMakeshopCsv()
-      .filter((p) => p.quantity > 0)          // 在庫あり
-      .filter((p) => p.price <= budgetNum)    // 予算内
+      .filter((p) => p.quantity > 0)
+      .filter((p) => p.price <= budgetNum)
       .map((p) => {
         const spec = parseSpec(`${p.name}\n${p.description}`);
-        const score
+        const score = scoreByUse(useCase, p.price, spec);
+        return { ...p, spec, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map((p) => ({
+        sku: p.sku,
+        name: p.name,
+        price: p.price,
+        url: p.url,
+        reason:
+          useCase === "office"
+            ? "事務・普段使い向けに、予算内でバランス重視で選定"
+            : useCase === "creator"
+            ? "編集・制作向けに、メモリ/SSD重視で選定"
+            : "ゲーム向けにGPU記載を優先して選定",
+      }));
+
+    return sendJson(res, 200, { ok: true, products });
+  } catch (e) {
+    return sendJson(res, 500, { ok: false, error: String(e) });
+  }
+};
