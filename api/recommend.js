@@ -5,6 +5,47 @@ const fs = require("fs");
 const path = require("path");
 const iconv = require("iconv-lite");
 
+const SHOP_BASE = "https://www.alpaca-pc.com";
+
+// 画像URLキャッシュ（6時間）
+let _imgCache = new Map(); // key:url -> { at:number, imageUrl:string }
+
+function normalizeItemId(code) {
+  const c = String(code || "").trim();
+  if (!c) return "";
+  if (/^\d+$/.test(c)) return c.padStart(12, "0"); // 12桁ゼロ埋め
+  return c;
+}
+
+function buildItemUrl(systemCode, sku) {
+  const id = normalizeItemId(systemCode || sku);
+  return id ? `${SHOP_BASE}/view/item/${id}` : "";
+}
+
+async function fetchOgImage(productUrl) {
+  if (!productUrl) return "";
+  const hit = _imgCache.get(productUrl);
+  const now = Date.now();
+  if (hit && now - hit.at < 6 * 60 * 60 * 1000) return hit.imageUrl;
+
+  try {
+    const res = await fetch(productUrl, { method: "GET" });
+    const html = await res.text();
+
+    const m =
+      html.match(/property=["']og:image["'][^>]*content=["']([^"']+)["']/i) ||
+      html.match(/name=["']twitter:image["'][^>]*content=["']([^"']+)["']/i);
+
+    const imageUrl = m ? m[1] : "";
+    _imgCache.set(productUrl, { at: now, imageUrl });
+    return imageUrl;
+  } catch {
+    _imgCache.set(productUrl, { at: now, imageUrl: "" });
+    return "";
+  }
+}
+
+
 // 60秒キャッシュ
 let _cache = { at: 0, rows: null };
 
@@ -74,7 +115,18 @@ function readProductsFromMakeshopCsv() {
       description: `${name}\n${opt}`.trim(),
       price,
       quantity,
-      url: "",
+const url = buildItemUrl(systemCode, originalCode || systemCode);
+
+return {
+  sku: originalCode || systemCode,
+  systemCode,
+  name,
+  description: `${name}\n${opt}`.trim(),
+  price,
+  quantity,
+  url,
+};
+
     };
   });
 
@@ -169,31 +221,36 @@ module.exports = async (req, res) => {
     const useCase = body.useCase || "office";
     const budgetNum = Number(body.budget ?? 60000);
 
-    const products = readProductsFromMakeshopCsv()
-      .filter((p) => p.quantity > 0)
-      .filter((p) => p.price <= budgetNum)
-      .map((p) => {
-        const spec = parseSpec(`${p.name}\n${p.description}`);
-        const score = scoreByUse(useCase, p.price, spec);
-        return { ...p, spec, score };
-      })
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 3)
-      .map((p) => ({
-        sku: p.sku,
-        name: p.name,
-        price: p.price,
-        url: p.url,
-        reason:
-          useCase === "office"
-            ? "事務・普段使い向けに、予算内でバランス重視で選定"
-            : useCase === "creator"
-            ? "編集・制作向けに、メモリ/SSD重視で選定"
-            : "ゲーム向けにGPU記載を優先して選定",
-      }));
+const top = readProductsFromMakeshopCsv()
+  .filter((p) => p.quantity > 0)
+  .filter((p) => p.price <= budgetNum)
+  .map((p) => {
+    const spec = parseSpec(`${p.name}\n${p.description}`);
+    const score = scoreByUse(useCase, p.price, spec);
+    return { ...p, spec, score };
+  })
+  .sort((a, b) => b.score - a.score)
+  .slice(0, 3)
+  .map((p) => ({
+    sku: p.sku,
+    name: p.name,
+    price: p.price,
+    url: p.url,
+    reason:
+      useCase === "office"
+        ? "事務・普段使い向けに、予算内でバランス重視で選定"
+        : useCase === "creator"
+        ? "編集・制作向けに、メモリ/SSD重視で選定"
+        : "ゲーム向けにGPU記載を優先して選定",
+  }));
 
-    return sendJson(res, 200, { ok: true, products });
-  } catch (e) {
-    return sendJson(res, 500, { ok: false, error: String(e) });
-  }
-};
+// 画像URL（og:image）を付与（上位3件だけ）
+const products = await Promise.all(
+  top.map(async (p) => ({
+    ...p,
+    imageUrl: await fetchOgImage(p.url),
+  }))
+);
+
+return sendJson(res, 200, { ok: true, products });
+
