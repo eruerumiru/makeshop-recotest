@@ -98,35 +98,32 @@ function readProductsFromMakeshopCsv() {
   const idx = Object.fromEntries(header.map((h, i) => [h, i]));
   const get = (cols, k) => (idx[k] == null ? "" : (cols[idx[k]] ?? "").trim());
 
-const rows = lines.slice(1).map((line) => {
-  const cols = parseCsvLine(line);
+  const rows = lines.slice(1).map((line) => {
+    const cols = parseCsvLine(line);
 
-  const systemCode = get(cols, "システム商品コード");
-  const originalCode = get(cols, "独自商品コード");
-  const name = get(cols, "商品名");
-  const opt = get(cols, "オプショングループ");
-  const price = Number(get(cols, "販売価格") || 0);
-  const quantity = Number(get(cols, "数量") || 0);
+    const systemCode = get(cols, "システム商品コード");
+    const originalCode = get(cols, "独自商品コード");
+    const name = get(cols, "商品名");
+    const opt = get(cols, "オプショングループ");
+    const price = Number(get(cols, "販売価格") || 0);
+    const quantity = Number(get(cols, "数量") || 0);
 
-  const url = buildItemUrl(systemCode, originalCode || systemCode);
+    const url = buildItemUrl(systemCode, originalCode || systemCode);
 
-  return {
-    sku: originalCode || systemCode,
-    systemCode,
-    name,
-    description: `${name}\n${opt}`.trim(),
-    price,
-    quantity,
-    url,
-  };
-});
-
-
+    return {
+      sku: originalCode || systemCode,
+      systemCode,
+      name,
+      description: `${name}\n${opt}`.trim(),
+      price,
+      quantity,
+      url,
     };
   });
 
   _cache = { at: now, rows };
   return rows;
+
 }
 
 function parseSpec(text = "") {
