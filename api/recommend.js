@@ -247,5 +247,10 @@ const products = await Promise.all(
   }))
 );
 
-return sendJson(res, 200, { ok: true, products });
+    return sendJson(res, 200, { ok: true, products });
+  } catch (e) {
+    return sendJson(res, 500, { ok: false, error: String(e) });
+  }
+};
+
 
