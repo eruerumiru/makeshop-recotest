@@ -1,6 +1,4 @@
 // api/recommend.js
-// CSV（data/20251224113121.csv）から在庫>0を読んでおすすめ返す
-
 const fs = require("fs");
 const path = require("path");
 const iconv = require("iconv-lite");
@@ -8,12 +6,21 @@ const iconv = require("iconv-lite");
 const SHOP_BASE = "https://www.alpaca-pc.com";
 
 // 画像URLキャッシュ（6時間）
-let _imgCache = new Map(); // key:url -> { at:number, imageUrl:string }
+let _imgCache = new Map(); // url -> { at, imageUrl }
+
+// CSVキャッシュ（60秒）
+let _cache = { at: 0, rows: null };
+
+function setCors(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
 
 function normalizeItemId(code) {
   const c = String(code || "").trim();
   if (!c) return "";
-  if (/^\d+$/.test(c)) return c.padStart(12, "0"); // 12桁ゼロ埋め
+  if (/^\d+$/.test(c)) return c.padStart(12, "0");
   return c;
 }
 
@@ -24,12 +31,13 @@ function buildItemUrl(systemCode, sku) {
 
 async function fetchOgImage(productUrl) {
   if (!productUrl) return "";
+
   const hit = _imgCache.get(productUrl);
   const now = Date.now();
   if (hit && now - hit.at < 6 * 60 * 60 * 1000) return hit.imageUrl;
 
   try {
-    const res = await fetch(productUrl, { method: "GET" });
+    const res = await fetch(productUrl);
     const html = await res.text();
 
     const m =
@@ -39,15 +47,11 @@ async function fetchOgImage(productUrl) {
     const imageUrl = m ? m[1] : "";
     _imgCache.set(productUrl, { at: now, imageUrl });
     return imageUrl;
-  } catch {
+  } catch (e) {
     _imgCache.set(productUrl, { at: now, imageUrl: "" });
     return "";
   }
 }
-
-
-// 60秒キャッシュ
-let _cache = { at: 0, rows: null };
 
 function parseCsvLine(line) {
   const out = [];
@@ -123,7 +127,6 @@ function readProductsFromMakeshopCsv() {
 
   _cache = { at: now, rows };
   return rows;
-
 }
 
 function parseSpec(text = "") {
@@ -145,7 +148,6 @@ function parseSpec(text = "") {
   }
 
   const hasGPU = /(RTX|GTX|Radeon|Arc|GeForce)/i.test(t);
-
   const cpu =
     (t.match(/i[3579]-\d{4,5}[A-Z]{0,2}/i) || [null])[0] ||
     (t.match(/Ryzen\s*[3579]\s*\d{4,5}[A-Z]{0,2}/i) || [null])[0] ||
@@ -194,16 +196,14 @@ async function readJson(req) {
 }
 
 module.exports = async (req, res) => {
-  // CORS
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  setCors(res);
 
-  // preflight
+  // preflight（ここで必ず終わる）
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
     return res.end();
   }
+
   if (req.method !== "POST") {
     return sendJson(res, 405, { ok: false, error: "POST only" });
   }
@@ -213,41 +213,38 @@ module.exports = async (req, res) => {
     const useCase = body.useCase || "office";
     const budgetNum = Number(body.budget ?? 60000);
 
-const top = readProductsFromMakeshopCsv()
-  .filter((p) => p.quantity > 0)
-  .filter((p) => p.price <= budgetNum)
-  .map((p) => {
-    const spec = parseSpec(`${p.name}\n${p.description}`);
-    const score = scoreByUse(useCase, p.price, spec);
-    return { ...p, spec, score };
-  })
-  .sort((a, b) => b.score - a.score)
-  .slice(0, 3)
-  .map((p) => ({
-    sku: p.sku,
-    name: p.name,
-    price: p.price,
-    url: p.url,
-    reason:
-      useCase === "office"
-        ? "事務・普段使い向けに、予算内でバランス重視で選定"
-        : useCase === "creator"
-        ? "編集・制作向けに、メモリ/SSD重視で選定"
-        : "ゲーム向けにGPU記載を優先して選定",
-  }));
+    const top = readProductsFromMakeshopCsv()
+      .filter((p) => p.quantity > 0)
+      .filter((p) => p.price <= budgetNum)
+      .map((p) => {
+        const spec = parseSpec(`${p.name}\n${p.description}`);
+        const score = scoreByUse(useCase, p.price, spec);
+        return { ...p, spec, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map((p) => ({
+        sku: p.sku,
+        name: p.name,
+        price: p.price,
+        url: p.url,
+        reason:
+          useCase === "office"
+            ? "事務・普段使い向けに、予算内でバランス重視で選定"
+            : useCase === "creator"
+            ? "編集・制作向けに、メモリ/SSD重視で選定"
+            : "ゲーム向けにGPU記載を優先して選定",
+      }));
 
-// 画像URL（og:image）を付与（上位3件だけ）
-const products = await Promise.all(
-  top.map(async (p) => ({
-    ...p,
-    imageUrl: await fetchOgImage(p.url),
-  }))
-);
+    const products = await Promise.all(
+      top.map(async (p) => ({
+        ...p,
+        imageUrl: await fetchOgImage(p.url),
+      }))
+    );
 
     return sendJson(res, 200, { ok: true, products });
   } catch (e) {
     return sendJson(res, 500, { ok: false, error: String(e) });
   }
 };
-
-
